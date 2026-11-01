@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2b1d3d">
+<title>Pigeon Sauce</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #2b1d3d;
+    --panel: #f7ecd0;
+    --panel-edge: #6a3b1f;
+    --ink: #fff6e0;
+    --red: #d8322a;
+    --red-dark: #8e1c16;
+    --mayo: #f5c400;
+    --mayo-dark: #a37f00;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    overflow: hidden; overscroll-behavior: none;
+    font-family: 'Press Start 2P', monospace;
+    -webkit-user-select: none; user-select: none;
+  }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { position: relative; }
+  canvas {
+    display: block; width: 100%; height: 100%;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+    touch-action: none;
+  }
+  .overlay {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; gap: 4%; padding: 16px; pointer-events: none;
+  }
+  .overlay.show { display: flex; }
+  .overlay .tap { pointer-events: auto; }
+  #ready { justify-content: space-between; padding: 16cqh 16px 30cqh; pointer-events: auto; }
+  h1 {
+    margin: 0; font-size: 7.6cqw; line-height: 1.4; color: var(--ink);
+    text-shadow: 0.6cqw 0.6cqw 0 #000, -0.4cqw -0.4cqw 0 #000, 0.4cqw -0.4cqw 0 #000, -0.4cqw 0.4cqw 0 #000;
+  }
+  h1 .t { color: #ff5a45; }
+  h1 .m { color: var(--mayo); }
+  p { margin: 0; font-size: 3.6cqw; line-height: 1.9; text-shadow: 0.4cqw 0.4cqw 0 #000; }
+  #stage { container-type: size; }
+  .card {
+    background: var(--panel); color: #3a2414; border: 1.2cqw solid var(--panel-edge);
+    box-shadow: 0 1.6cqw 0 #000; padding: 4cqw 7cqw; display: grid;
+    grid-template-columns: auto auto; gap: 3cqw 8cqw; align-items: center; font-size: 3.6cqw;
+  }
+  .card b { font-size: 6.4cqw; color: var(--red); text-align: right; }
+  .card .new { grid-column: 1 / -1; color: #fff; background: var(--red); padding: 1.6cqw; font-size: 3cqw; display: none; }
+  .card .new.show { display: block; }
+  button {
+    font-family: inherit; font-size: 4.2cqw; color: var(--ink); background: var(--red);
+    border: 0; padding: 3.6cqw 6cqw; cursor: pointer;
+    box-shadow: 0 1.4cqw 0 var(--red-dark), 0 1.4cqw 0 1cqw #000;
+  }
+  button:active { transform: translateY(1.4cqw); box-shadow: 0 0 0 var(--red-dark), 0 0 0 1cqw #000; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="game"></canvas>
+
+    <div class="overlay show" id="ready">
+      <h1>PIGEON<br><span class="t">SAU</span><span class="m">CE</span></h1>
+      <p>Tape l'écran<br>pour voler</p>
+    </div>
+
+    <div class="overlay" id="over">
+      <h1>GAME OVER</h1>
+      <div class="card">
+        <span>SCORE</span><b id="score">0</b>
+        <span>MEILLEUR</span><b id="best">0</b>
+        <span class="new" id="newBest">NOUVEAU RECORD !</span>
+      </div>
+      <button class="tap" id="btnRetry">REJOUER</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---------- Dimensions (classic 288x512 portrait playfield) ----------
+  const W = 288, H = 512;
+  const GROUND_Y = 400;              // top of the ground strip
+  const PX = 2;                      // one art pixel = 2 screen pixels
+
+  // ---------- Physics (classic one-tap flapper values, 60 updates/s) ----------
+  const GRAVITY = 0.25;              // px / frame²
+  const FLAP_V = -4.6;               // px / frame, set (not added) on every tap
+  const MAX_FALL = 8;                // terminal velocity
+  const SCROLL = 2;                  // px / frame, tubes and ground
+  const GAP = 100;                   // vertical opening between the two caps
+  const SPACING = 180;               // horizontal distance between tube pairs
+  const TUBE_W = 52;
+  const BIRD_X = 80;
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  canvas.width = W; canvas.height = H;
+  ctx.imageSmoothingEnabled = false;
+
+  const stage = document.getElementById('stage');
+  function fit() {
+    const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+    stage.style.width = Math.floor(W * s) + 'px';
+    stage.style.height = Math.floor(H * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  // ---------- Pixel art helpers ----------
+  const PAL = {
+    K: '#241c2c', A: '#9aa3b5', a: '#6b7488', L: '#dfe3ec', l: '#b6bdcc',
+    N: '#3fae8a', n: '#8a5ac8', O: '#ff9a2a', W: '#ffffff', B: '#3a3340', b: '#e8e0d8',
+    R: '#d8322a', g: '#3f9a3a', Y: '#f5c400',
+  };
+  function bake(rows, scale = PX) {
+    const c = document.createElement('canvas');
+    c.width = rows[0].length * scale; c.height = rows.length * scale;
+    const x = c.getContext('2d');
+    rows.forEach((row, j) => {
+      for (let i = 0; i < row.length; i++) {
+        if (row[i] === '.') continue;
+        x.fillStyle = PAL[row[i]]; x.fillRect(i * scale, j * scale, scale, scale);
+      }
+    });
+    return c;
+  }
+
+  // Pigeon (faces right). Body without wing; the wing is overlaid per frame.
+  const PIGEON_BODY = [
+    '.........KKKK....',
+    '.......KKnNNNK...',
+    '......KAAnNWKK...',
+    '.....KAAAnNKKbBK.',
+    '..KKKAAAAAnNNKBBK',
+    '.KaaKAAAAAAnNK.K.',
+    'KaaKAAAAAAAAAK...',
+    'KaaKAAAAAAAAAAK..',
+    '.KKaAAAAAAAAAAK..',
+    '...KaAAAAAAAAK...',
+    '....KKaaaaaaK....',
+    '......KKKKKK.....',
+  ];
+  const WING_UP = [
+    '.KKKKK.',
+    'KLLLLLK',
+    'KlLLLLK',
+    '.KlllK.',
+  ];
+  const WING_MID = [
+    'KKKKKKK',
+    'KLLLLLK',
+    'KlLLLLK',
+    '.KKKKK.',
+  ];
+  const WING_DOWN = [
+    'KKKKKKK',
+    'KlLLLLK',
+    '.KLLLK.',
+    '..KlK..',
+  ];
+  const BODY = bake(PIGEON_BODY);
+  const WINGS = [
+    { img: bake(WING_UP), dy: 2 },
+    { img: bake(WING_MID), dy: 5 },
+    { img: bake(WING_DOWN), dy: 7 },
+  ];
+  // Assemble 3 complete frames (17x12 art -> 34x24 px)
+  const BIRD = WINGS.map(w => {
+    const c = document.createElement('canvas');
+    c.width = BODY.width; c.height = BODY.height;
+    const x = c.getContext('2d');
+    x.drawImage(BODY, 0, 0);
+    x.drawImage(w.img, 3 * PX, w.dy * PX);
+    return c;
+  });
+  const BIRD_W = BODY.width, BIRD_H = BODY.height;
+
+  // ---------- Tubes (tomato paste & mayonnaise) ----------
+  const FONT = {
+    T: ['111', '010', '010', '010', '010'],
+    O: ['111', '101', '101', '101', '111'],
+    M: ['101', '111', '111', '101', '101'],
+    A: ['010', '101', '111', '101', '101'],
+    E: ['111', '100', '110', '100', '111'],
+    Y: ['101', '101', '010', '010', '010'],
+  };
+  const TOMATO_ICON = [
+    '..g.g..',
+    '.RRgRR.',
+    'RRRRRRR',
+    'RRRRRWR',
+    'RRRRRRR',
+    '.RRRRR.',
+  ];
+  const EGG_ICON = [
+    '..WWW..',
+    '.WWWWW.',
+    'WWYYYWW',
+    'WWYYYWW',
+    '.WWWWW.',
+    '..WWW..',
+  ];
+  const TUBES = {
+    tomato: {
+      body: '#d8322a', hi: '#ff6a55', lo: '#9c1d18',
+      metal: '#d3d7e0', metalLo: '#8f96a6',
+      cap: '#f4f1ea', capLo: '#c2bdb0',
+      label: '#f7ecd0', labelEdge: '#9c1d18', text: '#c41e1e',
+      word: 'TOMATE', icon: TOMATO_ICON,
+    },
+    mayo: {
+      body: '#f7f1dc', hi: '#ffffff', lo: '#cfc29a',
+      metal: '#f7f1dc', metalLo: '#cfc29a',
+      cap: '#f5c400', capLo: '#a37f00',
+      label: '#f5c400', labelEdge: '#a37f00', text: '#5a3d00',
+      word: 'MAYO', icon: EGG_ICON,
+    },
+  };
+  const TUBE_ART_W = 26;             // 26 art px = 52 screen px
+  const TUBE_LEN = 280;              // art px, longer than the screen
+  const CAP_LEN = 8, SHOULDER_LEN = 3, CAP_ART_W = 18;
+  const CAP_PX = (CAP_LEN + SHOULDER_LEN) * PX;   // 22 px
+  const CAP_W = CAP_ART_W * PX;                   // 36 px
+
+  // Builds a tube with its cap at the bottom (hanging from the top).
+  function bakeTube(t) {
+    const c = document.createElement('canvas');
+    c.width = TUBE_ART_W * PX; c.height = TUBE_LEN * PX;
+    const x = c.getContext('2d');
+    const px = (i, j, col) => { x.fillStyle = col; x.fillRect(i * PX, j * PX, PX, PX); };
+    const row = (j, from, to, colorAt) => { for (let i = from; i <= to; i++) px(i, j, colorAt(i, from, to)); };
+    const shade = (base, hi, lo) => (i, a, b) => i === a || i === b ? PAL.K : i <= a + 2 ? hi : i >= b - 3 ? lo : base;
+
+    for (let d = 0; d < TUBE_LEN; d++) {
+      const j = TUBE_LEN - 1 - d;    // d = distance from the cap tip
+      if (d < CAP_LEN) {
+        const a = (TUBE_ART_W - CAP_ART_W) / 2, b = a + CAP_ART_W - 1;
+        if (d === 0) { row(j, a, b, () => PAL.K); continue; }
+        const ribbed = d % 2 === 0;
+        row(j, a, b, (i, a, b) => i === a || i === b ? PAL.K : ribbed ? t.capLo : i <= a + 2 ? '#ffffff' : i >= b - 2 ? t.capLo : t.cap);
+      } else if (d < CAP_LEN + SHOULDER_LEN) {
+        const inset = CAP_LEN + SHOULDER_LEN - d;   // 3,2,1
+        row(j, inset, TUBE_ART_W - 1 - inset, shade(t.metal, '#ffffff', t.metalLo));
+      } else {
+        row(j, 0, TUBE_ART_W - 1, shade(t.body, t.hi, t.lo));
+      }
+    }
+    // Label band near the cap: icon + upright stacked word.
+    const lettersH = t.word.length * 6 - 1;
+    const labelH = 2 + 6 + 3 + lettersH + 2;
+    const labelBottom = TUBE_LEN - 1 - (CAP_LEN + SHOULDER_LEN + 3);
+    const labelTop = labelBottom - labelH + 1;
+    for (let j = labelTop; j <= labelBottom; j++) {
+      const edge = j === labelTop || j === labelBottom;
+      for (let i = 1; i < TUBE_ART_W - 1; i++) px(i, j, edge ? t.labelEdge : t.label);
+    }
+    let y = labelTop + 2;
+    t.icon.forEach((r, jj) => { for (let ii = 0; ii < r.length; ii++) if (r[ii] !== '.') px(10 + ii, y + jj, PAL[r[ii]]); });
+    y += 6 + 3;
+    for (const ch of t.word) {
+      FONT[ch].forEach((r, jj) => { for (let ii = 0; ii < 3; ii++) if (r[ii] === '1') px(12 + ii, y + jj, t.text); });
+      y += 6;
+    }
+    // A couple of decorative stripes further up the tube
+    for (const off of [24, 30]) {
+      const j = labelTop - off;
+      for (let i = 1; i < TUBE_ART_W - 1; i++) px(i, j, t.labelEdge);
+    }
+    return c;
+  }
+  function flipV(src) {
+    const c = document.createElement('canvas');
+    c.width = src.width; c.height = src.height;
+    const x = c.getContext('2d');
+    x.translate(0, src.height); x.scale(1, -1); x.drawImage(src, 0, 0);
+    return c;
+  }
+  // The label text must stay upright on the bottom tube too, so bottom tubes are
+  // built from a flipped body with the label redrawn upright.
+  function bakeBottomTube(t) {
+    const flipped = flipV(bakeTube({ ...t, word: '', icon: [] }));
+    // redraw label upright at mirrored position
+    const top = bakeTube(t);
+    const x = flipped.getContext('2d');
+    const lettersH = t.word.length * 6 - 1;
+    const labelH = 2 + 6 + 3 + lettersH + 2;
+    const labelBottomTop = TUBE_LEN - 1 - (CAP_LEN + SHOULDER_LEN + 3); // in top-tube coords
+    const srcY = (labelBottomTop - labelH + 1) * PX, hgt = labelH * PX;
+    const dstY = (TUBE_LEN * PX) - srcY - hgt;
+    x.drawImage(top, 0, srcY, top.width, hgt, 0, dstY, top.width, hgt);
+    return flipped;
+  }
+  const TUBE_IMG = {
+    tomato: { top: bakeTube(TUBES.tomato), bottom: bakeBottomTube(TUBES.tomato) },
+    mayo: { top: bakeTube(TUBES.mayo), bottom: bakeBottomTube(TUBES.mayo) },
+  };
+
+  // ---------- Background (city at sunset) ----------
+  const bg = document.createElement('canvas');
+  bg.width = W; bg.height = GROUND_Y;
+  (() => {
+    const x = bg.getContext('2d');
+    const bands = ['#3b2554', '#57305f', '#7a3a63', '#a34a5e', '#cf6656', '#ee8d55', '#f7b562'];
+    const bh = 34;
+    bands.forEach((c, i) => { x.fillStyle = c; x.fillRect(0, i * bh, W, bh); });
+    x.fillStyle = bands[bands.length - 1]; x.fillRect(0, bands.length * bh, W, GROUND_Y);
+    // sun
+    x.fillStyle = '#ffd98a';
+    for (let r = 0; r < 28; r += 2) { const w = Math.round(Math.sqrt(28 * 28 - r * r)); x.fillRect(200 - w, 250 - r, w * 2, 2); }
+    // far skyline
+    let seed = 7;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let bx = 0; bx < W; ) {
+      const w = 18 + Math.floor(rnd() * 22), h = 60 + Math.floor(rnd() * 90);
+      x.fillStyle = '#4a2c58'; x.fillRect(bx, GROUND_Y - h - 40, w, h + 40);
+      bx += w;
+    }
+    // near skyline with windows
+    for (let bx = -6; bx < W; ) {
+      const w = 26 + Math.floor(rnd() * 26), h = 40 + Math.floor(rnd() * 70);
+      x.fillStyle = '#2e1c3c'; x.fillRect(bx, GROUND_Y - h, w, h);
+      for (let wy = GROUND_Y - h + 6; wy < GROUND_Y - 6; wy += 10)
+        for (let wx = bx + 4; wx < bx + w - 4; wx += 8) {
+          x.fillStyle = rnd() < 0.35 ? '#ffd86b' : '#1f1430';
+          x.fillRect(wx, wy, 4, 4);
+        }
+      bx += w + 2;
+    }
+  })();
+
+  // ---------- Sounds ----------
+  let actx = null;
+  function tone(freq, dur, type = 'square', vol = 0.05, slide = 0, delay = 0) {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      const t0 = actx.currentTime + delay;
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, t0);
+      if (slide) o.frequency.linearRampToValueAtTime(freq + slide, t0 + dur);
+      g.gain.setValueAtTime(vol, t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g).connect(actx.destination);
+      o.start(t0); o.stop(t0 + dur);
+    } catch (_) { /* no audio */ }
+  }
+  const sfx = {
+    flap: () => tone(520, 0.09, 'triangle', 0.06, 260),
+    point: () => { tone(988, 0.08, 'square', 0.05); tone(1319, 0.14, 'square', 0.05, 0, 0.08); },
+    hit: () => tone(180, 0.18, 'sawtooth', 0.08, -100),
+    fall: () => tone(600, 0.45, 'triangle', 0.05, -480, 0.15),
+  };
+
+  // ---------- State ----------
+  let state, bird, tubes, score, groundX, flash, frame, deadTimer, tubeCount;
+  let best = 0;
+  try { best = parseInt(localStorage.getItem('pigeonSauceBest') || '0', 10) || 0; } catch (_) {}
+
+  function reset() {
+    state = 'ready';
+    bird = { y: 230, vy: 0, angle: 0, wing: 0, flapTimer: 0 };
+    tubes = []; score = 0; flash = 0; frame = 0; deadTimer = 0; tubeCount = 0;
+    groundX = groundX || 0;
+  }
+  reset();
+
+  const $ = id => document.getElementById(id);
+  function showOverlay(id) { ['ready', 'over'].forEach(o => $(o).classList.toggle('show', o === id)); }
+
+  function flap() {
+    bird.vy = FLAP_V;
+    bird.flapTimer = 0;
+    sfx.flap();
+  }
+  function addTube(x) {
+    const minTop = 50, maxTop = GROUND_Y - 50 - GAP;
+    const gapTop = minTop + Math.floor(Math.random() * (maxTop - minTop));
+    tubes.push({ x, gapTop, kind: tubeCount % 2 === 0 ? 'tomato' : 'mayo', scored: false });
+    tubeCount++;
+  }
+
+  function press() {
+    if (state === 'ready') {
+      state = 'play';
+      showOverlay(null);
+      addTube(W + 60);
+      flap();
+    } else if (state === 'play') {
+      flap();
+    }
+  }
+  function retry() { reset(); showOverlay('ready'); }
+
+  canvas.addEventListener('pointerdown', e => { e.preventDefault(); press(); });
+  $('ready').addEventListener('pointerdown', e => { e.preventDefault(); press(); });
+  $('btnRetry').addEventListener('click', retry);
+  window.addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'Enter') {
+      e.preventDefault();
+      if (state === 'over') { if (deadTimer > 30) retry(); } else press();
+    }
+  });
+  document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  document.addEventListener('dblclick', e => e.preventDefault());
+
+  // ---------- Collision ----------
+  function birdBox() {
+    // slightly smaller than the sprite, like a fair hitbox
+    return { x: BIRD_X - BIRD_W / 2 + 4, y: bird.y - BIRD_H / 2 + 3, w: BIRD_W - 8, h: BIRD_H - 6 };
+  }
+  const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  function tubeBoxes(t) {
+    const capX = t.x + (TUBE_W - CAP_W) / 2;
+    const gapBottom = t.gapTop + GAP;
+    return [
+      { x: t.x, y: -1000, w: TUBE_W, h: 1000 + t.gapTop - CAP_PX },                    // top body (infinite upward)
+      { x: capX, y: t.gapTop - CAP_PX, w: CAP_W, h: CAP_PX },                          // top cap
+      { x: capX, y: gapBottom, w: CAP_W, h: CAP_PX },                                  // bottom cap
+      { x: t.x, y: gapBottom + CAP_PX, w: TUBE_W, h: GROUND_Y - gapBottom - CAP_PX },  // bottom body
+    ];
+  }
+
+  function die() {
+    state = 'dying';
+    flash = 10;
+    sfx.hit();
+    sfx.fall();
+    if (navigator.vibrate) navigator.vibrate(80);
+  }
+
+  // ---------- Update ----------
+  function update() {
+    frame++;
+    if (flash > 0) flash--;
+
+    const scrolling = state === 'ready' || state === 'play';
+    if (scrolling) groundX = (groundX - SCROLL) % 24;
+
+    // wing animation (stops once the pigeon is dead)
+    if (state === 'ready' || state === 'play') {
+      if (frame % 5 === 0) bird.wing = (bird.wing + 1) % 4;
+    }
+
+    if (state === 'ready') {
+      bird.y = 230 + Math.sin(frame * 0.12) * 4;
+      bird.angle = 0;
+      return;
+    }
+
+    if (state === 'play' || state === 'dying') {
+      bird.vy = Math.min(MAX_FALL, bird.vy + GRAVITY);
+      bird.y += bird.vy;
+      bird.flapTimer++;
+      // Nose up right after a flap, then dive progressively once falling.
+      if (bird.vy < 0 || bird.flapTimer < 18) {
+        bird.angle = -25;
+      } else {
+        bird.angle = Math.min(90, bird.angle + 4);
+      }
+    }
+
+    if (state === 'play') {
+      for (const t of tubes) t.x -= SCROLL;
+      const last = tubes[tubes.length - 1];
+      if (last && last.x <= W + TUBE_W - SPACING) addTube(last.x + SPACING);
+      tubes = tubes.filter(t => t.x > -TUBE_W - 4);
+
+      const bb = birdBox();
+      for (const t of tubes) {
+        if (!t.scored && t.x + TUBE_W / 2 < BIRD_X) {
+          t.scored = true; score++; sfx.point();
+        }
+        if (tubeBoxes(t).some(r => overlap(bb, r))) { die(); break; }
+      }
+    }
+
+    // ground
+    if ((state === 'play' || state === 'dying') && bird.y + BIRD_H / 2 >= GROUND_Y) {
+      bird.y = GROUND_Y - BIRD_H / 2;
+      if (state === 'play') { flash = 10; sfx.hit(); if (navigator.vibrate) navigator.vibrate(80); }
+      gameOver();
+    }
+    if (state === 'over') deadTimer++;
+  }
+
+  function gameOver() {
+    state = 'over';
+    bird.angle = 90;
+    deadTimer = 0;
+    const isBest = score > best;
+    if (isBest) { best = score; try { localStorage.setItem('pigeonSauceBest', String(best)); } catch (_) {} }
+    $('score').textContent = score;
+    $('best').textContent = best;
+    $('newBest').classList.toggle('show', isBest && score > 0);
+    setTimeout(() => { if (state === 'over') showOverlay('over'); }, 550);
+  }
+
+  // ---------- Render ----------
+  function drawScore() {
+    ctx.font = '28px "Press Start 2P", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const s = String(score);
+    for (const [dx, dy] of [[-3, 0], [3, 0], [0, -3], [0, 3], [3, 3]]) { ctx.fillStyle = '#000'; ctx.fillText(s, W / 2 + dx, 40 + dy); }
+    ctx.fillStyle = '#fff'; ctx.fillText(s, W / 2, 40);
+  }
+
+  function render() {
+    ctx.drawImage(bg, 0, 0);
+
+    for (const t of tubes) {
+      const img = TUBE_IMG[t.kind];
+      const x = Math.round(t.x);
+      ctx.drawImage(img.top, x, Math.round(t.gapTop - img.top.height));
+      ctx.drawImage(img.bottom, x, Math.round(t.gapTop + GAP));
+    }
+
+    // ground: curb + sidewalk tiles scrolling with the tubes
+    ctx.fillStyle = '#241c2c'; ctx.fillRect(0, GROUND_Y, W, 2);
+    ctx.fillStyle = '#c9c2d4'; ctx.fillRect(0, GROUND_Y + 2, W, 10);
+    ctx.fillStyle = '#9d95ab'; ctx.fillRect(0, GROUND_Y + 10, W, 2);
+    for (let x = groundX; x < W; x += 24) { ctx.fillStyle = '#9d95ab'; ctx.fillRect(Math.round(x), GROUND_Y + 2, 2, 8); }
+    ctx.fillStyle = '#8a8496'; ctx.fillRect(0, GROUND_Y + 12, W, H - GROUND_Y - 12);
+    for (let y = GROUND_Y + 12; y < H; y += 20) {
+      ctx.fillStyle = '#7a7486'; ctx.fillRect(0, y, W, 2);
+      const off = ((y - GROUND_Y) / 20) % 2 ? 12 : 0;
+      for (let x = groundX + off; x < W; x += 24) ctx.fillRect(Math.round(x), y, 2, 20);
+    }
+
+    // pigeon
+    const wingFrame = [0, 1, 2, 1][bird.wing];
+    const img = BIRD[state === 'dying' || state === 'over' ? 1 : wingFrame];
+    ctx.save();
+    ctx.translate(BIRD_X, Math.round(bird.y));
+    ctx.rotate(bird.angle * Math.PI / 180);
+    ctx.drawImage(img, -BIRD_W / 2, -BIRD_H / 2);
+    ctx.restore();
+
+    if (state === 'play' || state === 'dying') drawScore();
+
+    if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash / 10})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  // Fixed timestep: physics always runs at 60 updates per second.
+  let lastT = performance.now(), acc = 0;
+  function loop(now) {
+    acc += Math.min(100, now - lastT); lastT = now;
+    while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+    render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
