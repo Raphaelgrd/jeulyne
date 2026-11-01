@@ -49,6 +49,7 @@
   h1 .m { color: var(--mayo); }
   p { margin: 0; font-size: 3.6cqw; line-height: 1.9; text-shadow: 0.4cqw 0.4cqw 0 #000; }
   #stage { container-type: size; }
+  .taunt { font-size: 4.2cqw; color: var(--mayo); max-width: 92%; background: rgba(20, 12, 30, 0.82); padding: 3cqw 4cqw; border: 0.8cqw solid #000; }
   .card {
     background: var(--panel); color: #3a2414; border: 1.2cqw solid var(--panel-edge);
     box-shadow: 0 1.6cqw 0 #000; padding: 4cqw 7cqw; display: grid;
@@ -77,6 +78,7 @@
 
     <div class="overlay" id="over">
       <h1>GAME OVER</h1>
+      <p class="taunt" id="taunt"></p>
       <div class="card">
         <span>SCORE</span><b id="score">0</b>
         <span>MEILLEUR</span><b id="best">0</b>
@@ -494,12 +496,26 @@
     if (state === 'over') deadTimer++;
   }
 
+  const TAUNTS = [
+    'Fais un effort Lyne stp',
+    'Encore perdu Lyne',
+    'Tu veux que je t\'apprenne à jouer Lyne ?',
+  ];
+  let lastTaunt = -1;
+  function nextTaunt() {
+    let i;
+    do { i = Math.floor(Math.random() * TAUNTS.length); } while (i === lastTaunt);
+    lastTaunt = i;
+    return TAUNTS[i];
+  }
+
   function gameOver() {
     state = 'over';
     bird.angle = 90;
     deadTimer = 0;
     const isBest = score > best;
     if (isBest) { best = score; try { localStorage.setItem('pigeonSauceBest', String(best)); } catch (_) {} }
+    $('taunt').textContent = nextTaunt();
     $('score').textContent = score;
     $('best').textContent = best;
     $('newBest').classList.toggle('show', isBest && score > 0);
